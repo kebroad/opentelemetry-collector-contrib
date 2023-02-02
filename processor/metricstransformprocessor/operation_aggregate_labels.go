@@ -34,7 +34,7 @@ func aggregateLabelsOp(metric pmetric.Metric, mtpOp internalOperation) {
 	filterAttrs(metric, mtpOp.labelSetMap)
 	newMetric := pmetric.NewMetric()
 	copyMetricDetails(metric, newMetric)
-	ag := groupDataPoints(metric, aggGroups{})
+	ag := groupDataPoints(metric, aggGroups{}, mtpOp.disableGroupByTs)
 	mergeDataPoints(newMetric, mtpOp.configOperation.AggregationType, ag)
 	newMetric.MoveTo(metric)
 }
@@ -45,24 +45,24 @@ func aggregateLabelsOp(metric pmetric.Metric, mtpOp internalOperation) {
 func groupMetrics(metrics pmetric.MetricSlice, aggType AggregationType, to pmetric.Metric) {
 	var ag aggGroups
 	for i := 0; i < metrics.Len(); i++ {
-		ag = groupDataPoints(metrics.At(i), ag)
+		ag = groupDataPoints(metrics.At(i), ag, true)
 	}
 	mergeDataPoints(to, aggType, ag)
 }
 
-func groupDataPoints(metric pmetric.Metric, ag aggGroups) aggGroups {
+func groupDataPoints(metric pmetric.Metric, ag aggGroups, disableGroupByTs bool) aggGroups {
 	switch metric.Type() {
 	case pmetric.MetricTypeGauge:
 		if ag.gauge == nil {
 			ag.gauge = map[string]pmetric.NumberDataPointSlice{}
 		}
-		groupNumberDataPoints(metric.Gauge().DataPoints(), false, ag.gauge)
+		groupNumberDataPoints(metric.Gauge().DataPoints(), false, ag.gauge, disableGroupByTs)
 	case pmetric.MetricTypeSum:
 		if ag.sum == nil {
 			ag.sum = map[string]pmetric.NumberDataPointSlice{}
 		}
 		groupByStartTime := metric.Sum().AggregationTemporality() == pmetric.AggregationTemporalityDelta
-		groupNumberDataPoints(metric.Sum().DataPoints(), groupByStartTime, ag.sum)
+		groupNumberDataPoints(metric.Sum().DataPoints(), groupByStartTime, ag.sum, disableGroupByTs)
 	case pmetric.MetricTypeHistogram:
 		if ag.histogram == nil {
 			ag.histogram = map[string]pmetric.HistogramDataPointSlice{}
@@ -93,17 +93,22 @@ func mergeDataPoints(to pmetric.Metric, aggType AggregationType, ag aggGroups) {
 }
 
 func groupNumberDataPoints(dps pmetric.NumberDataPointSlice, useStartTime bool,
-	dpsByAttrsAndTs map[string]pmetric.NumberDataPointSlice) {
-	var keyHashParts []interface{}
-	for i := 0; i < dps.Len(); i++ {
-		if useStartTime {
-			keyHashParts = []interface{}{dps.At(i).StartTimestamp().String()}
+	dpsByAttrsAndTs map[string]pmetric.NumberDataPointSlice, disableGroupByTs bool) {
+	if disableGroupByTs {
+		dpsByAttrsAndTs["_"] = pmetric.NewNumberDataPointSlice()
+		dps.CopyTo(dpsByAttrsAndTs["_"])
+	} else{
+		var keyHashParts []interface{}
+		for i := 0; i < dps.Len(); i++ {
+			if useStartTime {
+				keyHashParts = []interface{}{dps.At(i).StartTimestamp().String()}
+			}
+			key := dataPointHashKey(dps.At(i).Attributes(), dps.At(i).Timestamp(), keyHashParts...)
+			if _, ok := dpsByAttrsAndTs[key]; !ok {
+				dpsByAttrsAndTs[key] = pmetric.NewNumberDataPointSlice()
+			}
+			dps.At(i).MoveTo(dpsByAttrsAndTs[key].AppendEmpty())
 		}
-		key := dataPointHashKey(dps.At(i).Attributes(), dps.At(i).Timestamp(), keyHashParts...)
-		if _, ok := dpsByAttrsAndTs[key]; !ok {
-			dpsByAttrsAndTs[key] = pmetric.NewNumberDataPointSlice()
-		}
-		dps.At(i).MoveTo(dpsByAttrsAndTs[key].AppendEmpty())
 	}
 }
 
