@@ -128,6 +128,9 @@ type Operation struct {
 	// AggregatedValues is a list of label values to aggregate away.
 	AggregatedValues []string `mapstructure:"aggregated_values"`
 
+	// DisableGroupByTs disables data points geting grouped by exact time values pre-merging
+	DisableGroupByTs bool `mapstructure:"disable_group_by_ts"`
+
 	// NewValue is used to set a new label value either when the operation is `AggregatedValues` or `AddLabel`.
 	NewValue string `mapstructure:"new_value"`
 

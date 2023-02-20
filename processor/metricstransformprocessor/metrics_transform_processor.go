@@ -44,6 +44,7 @@ type internalOperation struct {
 	valueActionsMapping map[string]string
 	labelSetMap         map[string]bool
 	aggregatedValuesSet map[string]bool
+	disableGroupByTs	bool
 }
 
 type internalFilter interface {

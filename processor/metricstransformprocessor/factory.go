@@ -172,8 +172,10 @@ func buildHelperConfig(config *Config, version string) ([]internalTransform, err
 			}
 			if op.Action == AggregateLabels {
 				mtpOp.labelSetMap = sliceToSet(op.LabelSet)
+				mtpOp.disableGroupByTs = op.DisableGroupByTs
 			} else if op.Action == AggregateLabelValues {
 				mtpOp.aggregatedValuesSet = sliceToSet(op.AggregatedValues)
+				mtpOp.disableGroupByTs = op.DisableGroupByTs
 			}
 			helperT.Operations[j] = mtpOp
 		}
