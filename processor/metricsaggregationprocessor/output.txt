@@ -1,0 +1,652 @@
+./config.go
+```
+package metricsaggregationprocessor
+
+import (
+	"time"
+)
+
+type Config struct {
+	AggregationPeriod time.Duration `mapstructure:"aggregation_period"`
+	MaxStaleness      time.Duration `mapstructure:"max_staleness"`
+	// Aggregations contains the metric aggregation settings.
+	Aggregations []MetricAggregationConfig `mapstructure:"aggregations"`
+}
+
+type MetricAggregationConfig struct {
+	// MetricName is the pattern to match metric names against.
+	MetricName string `mapstructure:"metric_name"`
+
+	// MatchType determines how the metric name pattern should be matched against metric names.
+	MatchType MatchType `mapstructure:"match_type"`
+
+	// NewName is the new name for the metric after aggregation.
+	NewName string `mapstructure:"new_name"`
+
+	// AggregationType defines the type of aggregation to be performed.
+	AggregationType AggregationType `mapstructure:"aggregation_type"`
+
+	// DataPointAttributes is a list of attributes to be aggregated over.
+	DataPointAttributes []string `mapstructure:"data_point_attributes"`
+
+	// KeepOriginal determines whether the original metric is also emitted. This is only applicable when new_name is set.
+	KeepOriginal bool `mapstructure:"keep_original"`
+
+	// LowerBound is the lower bound for the histogram buckets. Only applicable when AggregationType is Bucketize.
+	LowerBound float64 `mapstructure:"lower_bound,omitempty"`
+
+	// UpperBound is the upper bound for the histogram buckets. Only applicable when AggregationType is Bucketize.
+	UpperBound float64 `mapstructure:"upper_bound,omitempty"`
+
+	// BucketCount is the number of buckets between LowerBound and UpperBound. Only applicable when AggregationType is Bucketize.
+	BucketCount int `mapstructure:"bucket_count,omitempty"`
+}
+
+type MatchType string
+
+const (
+	// MatchTypeStrict matches metric names exactly
+	Strict MatchType = "strict"
+	
+	// MatchTypeRegexp matches metric names using a regular expression.
+	Regexp  MatchType = "regex"
+)
+
+// AggregationType defines the type of aggregation to perform on matching metrics.
+type AggregationType string
+
+const (
+	// AggregationTypeMin calculates the minimum value of matching metrics.
+	Min     AggregationType = "min"
+	// AggregationTypeMax calculates the maximum value of matching metrics.
+	Max     AggregationType = "max"
+	// AggregationTypeCount calculates the count of matching metrics.
+	Count   AggregationType = "count"
+	// AggregationTypeCount calculates the count of matching metrics.
+	Average AggregationType = "average"
+	// Bucketize calculates the distribution of matching metrics.
+	Bucketize AggregationType = "bucketize"
+)
+
+
+
+
+
+
+```
+./metrics_aggregation_processor.go
+```
+package metricsaggregationprocessor
+
+import (
+	"context"
+	"regexp"
+	"slices"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/zap"
+	
+)
+
+type ContextKey string
+
+const (
+	CurrentTimeContextKey ContextKey = "currentTime"
+)
+
+type metricsAggregationProcessor struct {
+	next            consumer.Metrics
+	clock Clock
+	logger          *zap.Logger
+	config          *Config
+	flushedMetrics pmetric.MetricSlice
+	windows map[metricKey][]*aggregatedWindow
+}
+
+func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) *metricsAggregationProcessor {
+	// Make a list of metric names for quick checking
+
+	return &metricsAggregationProcessor{
+		config: cfg,
+		logger:   logger,
+		windows: make(map[metricKey][]*aggregatedWindow),
+		clock: &realClock{},
+		flushedMetrics: pmetric.NewMetricSlice(),
+	}
+}
+
+
+func (m *metricsAggregationProcessor) getAggregationConfigForMetric(metric pmetric.Metric) *MetricAggregationConfig {
+	for _, aggregationConfig := range m.config.Aggregations {
+		matchesMetricName := false
+		switch aggregationConfig.MatchType {
+		case Strict:
+			if aggregationConfig.MetricName == metric.Name() {
+				matchesMetricName = true
+			}
+		case Regexp:
+			pattern, err := regexp.Compile(aggregationConfig.MetricName)
+			if err != nil {
+				continue
+			}
+			if pattern.MatchString(metric.Name()) {
+				matchesMetricName = true
+			}
+		}
+		if matchesMetricName {
+			return &aggregationConfig
+		}
+	}
+	return nil
+}
+
+func getMatchingAttributes(aggregationConfig *MetricAggregationConfig, attributes pcommon.Map) pcommon.Map {
+	// Get matching keys from the attributes that are in the aggregationConfig.DataPointAttributes
+	matchingAttributes := pcommon.NewMap()
+	attributes.CopyTo(matchingAttributes)
+	matchingAttributes.RemoveIf(func(k string, v pcommon.Value) bool {
+		return !slices.Contains(aggregationConfig.DataPointAttributes, k)
+	})
+	return matchingAttributes
+}
+
+func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+	ctx = context.WithValue(ctx, CurrentTimeContextKey, m.clock.Now())
+	// Iterate over ResourceMetrics
+	rms := md.ResourceMetrics()
+	rms.RemoveIf(func(rm pmetric.ResourceMetrics) bool {
+		rm.ScopeMetrics().RemoveIf(func(sm pmetric.ScopeMetrics) bool {
+			metrics := sm.Metrics()
+			metrics.RemoveIf(func(metric pmetric.Metric) bool {
+				aggregationConfig := m.getAggregationConfigForMetric(metric)
+				if aggregationConfig != nil {
+					switch metric.Type() {
+					case pmetric.MetricTypeGauge:
+						m.aggregateGaugeMetric(ctx, metric, aggregationConfig)
+					// case pmetric.MetricTypeSum:
+					// 	m.aggregateSumMetric(metric)
+					// case pmetric.MetricTypeHistogram:
+					// 	m.aggregateHistogramMetric(metric)
+					// }
+					}
+					if !aggregationConfig.KeepOriginal {
+						return true
+					}
+				} 
+				return false
+			})
+			return metrics.Len() == 0
+		})
+		return rm.ScopeMetrics().Len() == 0
+	})
+
+	if m.flushedMetrics.Len() > 0 {
+		rm := md.ResourceMetrics().AppendEmpty()
+		sm := rm.ScopeMetrics().AppendEmpty()
+		for i := 0; i < m.flushedMetrics.Len(); i++ {
+			m.flushedMetrics.At(i).CopyTo(sm.Metrics().AppendEmpty())
+		}
+		m.flushedMetrics = pmetric.NewMetricSlice()
+	}
+	
+	return md, nil
+}
+
+
+
+func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.Host) error {
+	go m.flushExpiredWindows()
+	return nil
+}
+
+func (m *metricsAggregationProcessor) Shutdown(ctx context.Context) error {
+	// TODO: Implement any shutdown logic if needed
+	return nil
+}
+
+
+
+
+
+```
+./testutils/clock.go
+```
+package testutils
+
+import (
+	"time"
+)
+
+type mockClock struct {
+    currentTime time.Time
+}
+
+func (m *mockClock) Now() time.Time {
+    return m.currentTime
+}
+
+func (m *mockClock) After(d time.Duration) <-chan time.Time {
+    m.currentTime = m.currentTime.Add(d)
+    return time.After(0) // immediately return
+}
+
+func (m *mockClock) Set(t time.Time) {
+    m.currentTime = t
+}
+
+func (m *mockClock) Add(d time.Duration) {
+    m.currentTime = m.currentTime.Add(d)
+}
+```
+./clock.go
+```
+package metricsaggregationprocessor
+
+import (
+	"time"
+)
+
+type Clock interface {
+    Now() time.Time
+    After(d time.Duration) <-chan time.Time
+    // ... any other time-related functions you use
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time {
+    return time.Now()
+}
+
+func (realClock) After(d time.Duration) <-chan time.Time {
+    return time.After(d)
+}
+
+type mockClock struct {
+    currentTime time.Time
+}
+
+func (m *mockClock) Now() time.Time {
+    return m.currentTime
+}
+
+func (m *mockClock) After(d time.Duration) <-chan time.Time {
+    m.currentTime = m.currentTime.Add(d)
+    return time.After(0) // immediately return
+}
+
+func (m *mockClock) Set(t time.Time) {
+    m.currentTime = t
+}
+
+func (m *mockClock) Add(d time.Duration) {
+    m.currentTime = m.currentTime.Add(d)
+}
+```
+./gauge.go
+```
+package metricsaggregationprocessor
+
+import (
+	"context"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+)
+
+// Helper function to get the value from a data point based on its type
+func getValue(dp pmetric.NumberDataPoint) float64 {
+	switch dp.ValueType() {
+	case pmetric.NumberDataPointValueTypeDouble:
+		return dp.DoubleValue()
+	case pmetric.NumberDataPointValueTypeInt:
+		return float64(dp.IntValue())
+	default:
+		return 0
+	}
+}
+
+// Helper function to set the value of a data point based on its type
+func setValue(dp pmetric.NumberDataPoint, value float64) {
+	switch dp.ValueType() {
+	case pmetric.NumberDataPointValueTypeDouble:
+		dp.SetDoubleValue(value)
+	case pmetric.NumberDataPointValueTypeInt:
+		dp.SetIntValue(int64(value))
+	}
+}
+
+
+
+func (m *metricsAggregationProcessor) aggregateGaugeMetric(ctx context.Context, metric pmetric.Metric, aggregationConfig *MetricAggregationConfig) {
+	// Get the data points from the metric
+	dps := metric.Gauge().DataPoints()
+
+	// Iterate over the data points
+	for i := 0; i < dps.Len(); i++ {
+		dp := dps.At(i)
+		matchingAttributes := getMatchingAttributes(aggregationConfig, dp.Attributes())
+		if matchingAttributes.Len() == 0 {
+			continue
+		}
+		relevantWindow := m.getWindowForMetric(ctx, metric, matchingAttributes, aggregationConfig)
+		if relevantWindow == nil {
+			continue
+		}
+		switch aggregationConfig.AggregationType {
+		// Check the aggregation type and aggregate the data point accordingly
+		case Min:
+			m.aggregateGaugeMin(relevantWindow, metric, dp)
+		case Max:
+			m.aggregateGaugeMax(relevantWindow, metric, dp)
+		case Count:
+			m.aggregateGaugeCount(relevantWindow)
+		case Average:
+			m.aggregateGaugeAverage(relevantWindow, metric, dp)
+		case Bucketize:
+			m.aggregateGaugeToHistogram(relevantWindow, metric, dp)
+		}
+	}
+
+}
+
+func (m *metricsAggregationProcessor) aggregateGaugeMin(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
+	if isNil(window.metric) || getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0)) {
+		window.metric = metric
+	}
+}
+
+func (m *metricsAggregationProcessor) aggregateGaugeMax(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
+	if isNil(window.metric) || getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)) {
+		window.metric = metric
+	}
+}
+
+func (m *metricsAggregationProcessor) aggregateGaugeCount(window *aggregatedWindow) {
+	window.count++
+}
+
+func (m *metricsAggregationProcessor) aggregateGaugeAverage(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
+	sum := getValue(window.metric.Gauge().DataPoints().At(0)) + getValue(dp)
+	setValue(window.metric.Gauge().DataPoints().At(0), sum)
+	window.count++
+}
+
+func isNil(metric pmetric.Metric) bool {
+	return metric.Type() == pmetric.MetricTypeEmpty
+}
+
+func (m *metricsAggregationProcessor) aggregateGaugeToHistogram(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
+	// Get the data points from the metric
+	histDp := window.metric.Histogram().DataPoints().At(0)
+	histDp.SetCount(histDp.Count() + 1)
+	if histDp.HasSum() {
+		histDp.SetSum(histDp.Sum() + getValue(dp))
+	} else {
+		histDp.SetSum(getValue(dp))
+	}
+	if histDp.Max() < getValue(dp) || !histDp.HasMax() {
+		histDp.SetMax(getValue(dp))
+	}
+	if histDp.Min() > getValue(dp) || !histDp.HasMin() {
+		histDp.SetMin(getValue(dp))
+	}
+	// Get the bucket index for the value
+	bucketIndex := findBucketIndex(getValue(dp), histDp.ExplicitBounds().AsRaw())
+	// Increment the bucket count
+	histDp.BucketCounts().SetAt(bucketIndex, histDp.BucketCounts().At(bucketIndex) + 1)
+}
+
+// Helper function to determine the bucket index for a value
+func findBucketIndex(value float64, explicitBounds []float64) int {
+	for i, bound := range explicitBounds {
+		if value <= bound {
+			return i
+		}
+	}
+	return len(explicitBounds) // This will be the index of the last bucket
+}
+```
+./factory.go
+```
+package metricsaggregationprocessor
+
+import (
+	"context"
+
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/collector/processor/processorhelper"
+)
+
+var processorCapabilities = consumer.Capabilities{MutatesData: true}
+
+const (
+	typeStr = "metricsaggregationprocessor"
+)
+
+// NewFactory creates a new factory for the metrics aggregation processor.
+func NewFactory() processor.Factory {
+	return processor.NewFactory(
+		typeStr,
+		createDefaultConfig,
+		processor.WithMetrics(createMetricsProcessor, component.StabilityLevelDevelopment),)
+}
+
+// createDefaultConfig creates the default configuration for the processor.
+func createDefaultConfig() component.Config {
+	return &Config{
+	}
+}
+
+// createProcessor creates a metrics aggregation processor from the configuration.
+func createMetricsProcessor(
+	ctx context.Context,
+	set processor.CreateSettings,
+	cfg component.Config,
+	nextConsumer consumer.Metrics,
+) (processor.Metrics, error) {
+	rCfg := cfg.(*Config)
+	// TODO: Validate config
+	if err := validateConfiguration(rCfg); err != nil {
+		return nil, err
+	}
+
+	metricsProcessor := newMetricsAggregationProcessor(rCfg, set.Logger,)
+	
+	
+	return processorhelper.NewMetricsProcessor(
+		ctx,
+		set,
+		cfg,
+		nextConsumer,
+		metricsProcessor.processMetrics,
+		processorhelper.WithCapabilities(processorCapabilities),
+	)
+	
+}
+
+func validateConfiguration(config *Config) error {
+	return nil
+}
+```
+./metric_key.go
+```
+package metricsaggregationprocessor
+
+import (
+	"sort"
+	"strings"
+
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+)
+
+type metricKey struct {
+	Name       string
+	Attributes string // Serialized representation of attributes
+	Type 	 pmetric.MetricType
+}
+
+func generateMetricKey(metric pmetric.Metric, attributes pcommon.Map) metricKey {
+	// Serialize attributes in a consistent manner
+	// For simplicity, we'll just join them as key=value pairs, but in practice, you might want a more efficient representation.
+	var serializedAttributes []string
+	attributes.Range(func(k string, v pcommon.Value) bool {
+		serializedAttributes = append(serializedAttributes, k+"="+v.AsString())
+		return true
+	})
+	sort.Strings(serializedAttributes) // Ensure consistent order
+
+	return metricKey{
+		Name:       metric.Name(),
+		Attributes: strings.Join(serializedAttributes, ","),
+		Type: 		metric.Type(),
+	}
+}
+
+
+
+
+
+```
+./metadata/generated_status.go
+```
+// Code generated by mdatagen. DO NOT EDIT.
+
+package metadata
+
+import (
+	"go.opentelemetry.io/collector/component"
+)
+
+const (
+	Type             = "metricstransform"
+	MetricsStability = component.StabilityLevelDevelopment
+)
+```
+./window.go
+```
+package metricsaggregationprocessor
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+)
+
+type aggregatedWindow struct {
+	sync.RWMutex
+	startTime       time.Time
+	metric          pmetric.Metric
+	count           int64   // for average calculation
+}
+
+func (m *metricsAggregationProcessor) createNewWindowIfExists(ctx context.Context, metric pmetric.Metric, attributes pcommon.Map, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
+	currentTime := ctx.Value(CurrentTimeContextKey).(time.Time)
+	windowMetricTimestamp := currentTime.Add(m.config.AggregationPeriod/2)
+	// create a metric copy from the original metric
+	windowMetric := pmetric.NewMetric()
+	var windowMetricType pmetric.MetricType
+	if aggregationConfig.AggregationType == Bucketize {
+		windowMetricType = pmetric.MetricTypeHistogram
+	} else {
+		windowMetricType = metric.Type()
+	}
+	switch windowMetricType {
+	case pmetric.MetricTypeGauge:
+		dp := windowMetric.Gauge().DataPoints().AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
+		attributes.CopyTo(dp.Attributes())
+	case pmetric.MetricTypeSum:
+		dp := windowMetric.Sum().DataPoints().AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
+		attributes.CopyTo(dp.Attributes())
+	case pmetric.MetricTypeHistogram:
+		dp := windowMetric.Histogram().DataPoints().AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
+		attributes.CopyTo(dp.Attributes())
+		// If its to bucketize, initialize the scale and bounds
+		if aggregationConfig.AggregationType == Bucketize {
+			dp.BucketCounts().FromRaw(make([]uint64, aggregationConfig.BucketCount))
+			scale := float64(aggregationConfig.UpperBound - aggregationConfig.LowerBound) / float64(aggregationConfig.BucketCount)
+			for i := 0; i < aggregationConfig.BucketCount; i++ {
+				dp.ExplicitBounds().Append(aggregationConfig.LowerBound + float64(i)*scale)
+			}
+		}
+	}
+	if aggregationConfig.NewName != "" {
+		windowMetric.SetName(aggregationConfig.NewName)
+	}
+	window := &aggregatedWindow{
+		startTime:       currentTime,
+		metric:          windowMetric,
+	}
+	return window
+}
+
+func (m *metricsAggregationProcessor) getWindowForMetric(ctx context.Context, metric pmetric.Metric, attributes pcommon.Map, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
+	metricKey := generateMetricKey(metric, attributes)
+	var metricWindow *aggregatedWindow
+	// check if this metricKey has an aggregation with the same type
+	windowsList, exists := m.windows[metricKey]
+	if !exists {
+		metricWindow = m.createNewWindowIfExists(ctx, metric, attributes, aggregationConfig)
+		if metricWindow == nil {
+			return nil
+		}
+		m.windows[metricKey] = []*aggregatedWindow{metricWindow}
+	} else {
+		found := false
+		for _, window := range windowsList {
+			if time.Now().After(window.startTime) && time.Now().Before(window.startTime.Add(m.config.AggregationPeriod)) {
+				metricWindow = window
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Create a new window and add to the list
+			metricWindow = m.createNewWindowIfExists(ctx, metric, attributes, aggregationConfig)
+			if metricWindow != nil {
+				m.windows[metricKey] = append(m.windows[metricKey], metricWindow)
+			} else {
+				return nil
+			}
+		}
+	}
+
+	return metricWindow
+}
+
+func (m *metricsAggregationProcessor) flushExpiredWindows() {
+	delay := m.config.AggregationPeriod / 2
+    for {
+        <-time.After(delay)
+        currentTime := m.clock.Now()
+
+        for key, windowsList := range m.windows {
+            newWindowsList := windowsList[:0]
+            for _, window := range windowsList {
+                if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
+                    window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
+                } else {
+                    newWindowsList = append(newWindowsList, window)
+                }
+            }
+
+            if len(newWindowsList) == 0 {
+                delete(m.windows, key)
+            } else {
+                m.windows[key] = newWindowsList
+            }
+        }
+    }
+}
+```
+
