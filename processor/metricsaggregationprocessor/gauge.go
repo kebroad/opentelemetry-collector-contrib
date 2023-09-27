@@ -62,32 +62,42 @@ func (m *metricsAggregationProcessor) aggregateGaugeMetric(ctx context.Context, 
 }
 
 func (m *metricsAggregationProcessor) aggregateGaugeMin(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
-	if isNil(window.metric) || getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0)) {
-		window.metric = metric
+	window.Lock()
+	defer window.Unlock()
+
+	if getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0)) {
+		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp))
 	}
 }
 
 func (m *metricsAggregationProcessor) aggregateGaugeMax(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
-	if isNil(window.metric) || getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)) {
-		window.metric = metric
+	window.Lock()
+	defer window.Unlock()
+
+	if getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)) {
+		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp))
 	}
 }
 
 func (m *metricsAggregationProcessor) aggregateGaugeCount(window *aggregatedWindow) {
+	window.Lock()
+	defer window.Unlock()
+
 	window.count++
 }
 
 func (m *metricsAggregationProcessor) aggregateGaugeAverage(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
+	window.Lock()
+	defer window.Unlock()
+
 	sum := getValue(window.metric.Gauge().DataPoints().At(0)) + getValue(dp)
 	setValue(window.metric.Gauge().DataPoints().At(0), sum)
 	window.count++
 }
 
-func isNil(metric pmetric.Metric) bool {
-	return metric.Type() == pmetric.MetricTypeEmpty
-}
-
 func (m *metricsAggregationProcessor) aggregateGaugeToHistogram(window *aggregatedWindow, metric pmetric.Metric, dp pmetric.NumberDataPoint) {
+	window.Lock()
+	defer window.Unlock()
 	// Get the data points from the metric
 	histDp := window.metric.Histogram().DataPoints().At(0)
 	histDp.SetCount(histDp.Count() + 1)

@@ -4,13 +4,13 @@ import (
 	"context"
 	"regexp"
 	"slices"
+	"sync"
 
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
-	
 )
 
 type ContextKey string
@@ -22,14 +22,26 @@ const (
 type metricsAggregationProcessor struct {
 	next            consumer.Metrics
 	clock Clock
+	compiledPatterns map[string]*regexp.Regexp
 	logger          *zap.Logger
 	config          *Config
 	flushedMetrics pmetric.MetricSlice
 	windows map[metricKey][]*aggregatedWindow
+	windowsMutex sync.RWMutex
 }
 
 func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) *metricsAggregationProcessor {
-	// Make a list of metric names for quick checking
+	compiledPatterns := make(map[string]*regexp.Regexp)
+	for _, aggregationConfig := range cfg.Aggregations {
+		if aggregationConfig.MatchType == Regexp {
+			pattern, err := regexp.Compile(aggregationConfig.MetricName)
+			if err != nil {
+				logger.Error("Failed to compile regex pattern for metric name", zap.String("metric_name", aggregationConfig.MetricName), zap.Error(err))
+				continue
+			}
+			compiledPatterns[aggregationConfig.MetricName] = pattern
+		}
+	}
 
 	return &metricsAggregationProcessor{
 		config: cfg,
@@ -37,6 +49,7 @@ func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) *metricsAgg
 		windows: make(map[metricKey][]*aggregatedWindow),
 		clock: &realClock{},
 		flushedMetrics: pmetric.NewMetricSlice(),
+		compiledPatterns: compiledPatterns,
 	}
 }
 
@@ -50,11 +63,8 @@ func (m *metricsAggregationProcessor) getAggregationConfigForMetric(metric pmetr
 				matchesMetricName = true
 			}
 		case Regexp:
-			pattern, err := regexp.Compile(aggregationConfig.MetricName)
-			if err != nil {
-				continue
-			}
-			if pattern.MatchString(metric.Name()) {
+			pattern, exists := m.compiledPatterns[aggregationConfig.MetricName]
+			if exists && pattern.MatchString(metric.Name()) {
 				matchesMetricName = true
 			}
 		}
@@ -113,7 +123,7 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 		}
 		m.flushedMetrics = pmetric.NewMetricSlice()
 	}
-	
+
 	return md, nil
 }
 

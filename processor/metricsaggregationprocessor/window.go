@@ -63,13 +63,17 @@ func (m *metricsAggregationProcessor) getWindowForMetric(ctx context.Context, me
 	metricKey := generateMetricKey(metric, attributes)
 	var metricWindow *aggregatedWindow
 	// check if this metricKey has an aggregation with the same type
+	m.windowsMutex.RLock()
 	windowsList, exists := m.windows[metricKey]
+	m.windowsMutex.RUnlock()
 	if !exists {
 		metricWindow = m.createNewWindowIfExists(ctx, metric, attributes, aggregationConfig)
 		if metricWindow == nil {
 			return nil
 		}
+		m.windowsMutex.Lock()
 		m.windows[metricKey] = []*aggregatedWindow{metricWindow}
+		m.windowsMutex.Unlock()
 	} else {
 		found := false
 		for _, window := range windowsList {
@@ -83,7 +87,9 @@ func (m *metricsAggregationProcessor) getWindowForMetric(ctx context.Context, me
 			// Create a new window and add to the list
 			metricWindow = m.createNewWindowIfExists(ctx, metric, attributes, aggregationConfig)
 			if metricWindow != nil {
+				m.windowsMutex.Lock()
 				m.windows[metricKey] = append(m.windows[metricKey], metricWindow)
+				m.windowsMutex.Unlock()
 			} else {
 				return nil
 			}
@@ -98,7 +104,7 @@ func (m *metricsAggregationProcessor) flushExpiredWindows() {
     for {
         <-time.After(delay)
         currentTime := m.clock.Now()
-
+		m.windowsMutex.Lock()
         for key, windowsList := range m.windows {
             newWindowsList := windowsList[:0]
             for _, window := range windowsList {
@@ -115,5 +121,6 @@ func (m *metricsAggregationProcessor) flushExpiredWindows() {
                 m.windows[key] = newWindowsList
             }
         }
+		m.windowsMutex.Unlock()
     }
 }
