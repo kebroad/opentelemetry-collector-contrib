@@ -42,7 +42,10 @@ func createMetricsProcessor(
 		return nil, err
 	}
 
-	metricsProcessor := newMetricsAggregationProcessor(rCfg, set.Logger,)
+	metricsProcessor, err := newMetricsAggregationProcessor(rCfg, set.Logger)
+	if err != nil {
+		return nil, err
+	}
 	
 	
 	return processorhelper.NewMetricsProcessor(

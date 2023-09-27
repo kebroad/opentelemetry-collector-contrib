@@ -1,7 +1,8 @@
 package metricsaggregationprocessor
 
 import (
-	"context"
+	"time"
+
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
@@ -29,18 +30,22 @@ func setValue(dp pmetric.NumberDataPoint, value float64) {
 
 
 
-func (m *metricsAggregationProcessor) aggregateGaugeMetric(ctx context.Context, metric pmetric.Metric, aggregationConfig *MetricAggregationConfig) {
+func (m *metricsAggregationProcessor) aggregateGaugeMetric(metric pmetric.Metric, aggregationConfig *MetricAggregationConfig, currentTime time.Time) {
 	// Get the data points from the metric
 	dps := metric.Gauge().DataPoints()
 
 	// Iterate over the data points
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
+		// If the timestamp on this datapoint is before the current time minus max_staleness, skip it
+		if dp.Timestamp().AsTime().Before(currentTime.Add(-m.config.MaxStaleness)) {
+			continue
+		}
 		matchingAttributes := getMatchingAttributes(aggregationConfig, dp.Attributes())
 		if matchingAttributes.Len() == 0 {
 			continue
 		}
-		relevantWindow := m.getWindowForMetric(ctx, metric, matchingAttributes, aggregationConfig)
+		relevantWindow := m.getWindowForMetric(metric, matchingAttributes, dp.Timestamp(), aggregationConfig)
 		if relevantWindow == nil {
 			continue
 		}

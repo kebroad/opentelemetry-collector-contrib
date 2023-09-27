@@ -20,39 +20,44 @@ const (
 )
 
 type metricsAggregationProcessor struct {
-	next            consumer.Metrics
-	clock Clock
-	compiledPatterns map[string]*regexp.Regexp
-	logger          *zap.Logger
-	config          *Config
-	flushedMetrics pmetric.MetricSlice
-	windows map[metricKey][]*aggregatedWindow
-	windowsMutex sync.RWMutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	next                consumer.Metrics
+	clock               Clock
+	compiledPatterns    map[string]*regexp.Regexp
+	logger              *zap.Logger
+	config              *Config
+	flushedMetrics      pmetric.MetricSlice
+	flushedMetricsMutex sync.RWMutex
+	windows             map[windowKey]*aggregatedWindow
+	windowsMutex        sync.RWMutex
 }
 
-func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) *metricsAggregationProcessor {
+func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) (*metricsAggregationProcessor, error) {
 	compiledPatterns := make(map[string]*regexp.Regexp)
 	for _, aggregationConfig := range cfg.Aggregations {
 		if aggregationConfig.MatchType == Regexp {
 			pattern, err := regexp.Compile(aggregationConfig.MetricName)
 			if err != nil {
 				logger.Error("Failed to compile regex pattern for metric name", zap.String("metric_name", aggregationConfig.MetricName), zap.Error(err))
-				continue
+				return nil, err
 			}
 			compiledPatterns[aggregationConfig.MetricName] = pattern
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &metricsAggregationProcessor{
-		config: cfg,
-		logger:   logger,
-		windows: make(map[metricKey][]*aggregatedWindow),
-		clock: &realClock{},
-		flushedMetrics: pmetric.NewMetricSlice(),
+		ctx:              ctx,
+		cancel:           cancel,
+		config:           cfg,
+		logger:           logger,
+		windows:          make(map[windowKey]*aggregatedWindow),
+		clock:            &realClock{},
+		flushedMetrics:   pmetric.NewMetricSlice(),
 		compiledPatterns: compiledPatterns,
-	}
+	}, nil
 }
-
 
 func (m *metricsAggregationProcessor) getAggregationConfigForMetric(metric pmetric.Metric) *MetricAggregationConfig {
 	for _, aggregationConfig := range m.config.Aggregations {
@@ -86,8 +91,7 @@ func getMatchingAttributes(aggregationConfig *MetricAggregationConfig, attribute
 }
 
 func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
-	ctx = context.WithValue(ctx, CurrentTimeContextKey, m.clock.Now())
-	// Iterate over ResourceMetrics
+	currentTime := m.clock.Now()
 	rms := md.ResourceMetrics()
 	rms.RemoveIf(func(rm pmetric.ResourceMetrics) bool {
 		rm.ScopeMetrics().RemoveIf(func(sm pmetric.ScopeMetrics) bool {
@@ -97,17 +101,17 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 				if aggregationConfig != nil {
 					switch metric.Type() {
 					case pmetric.MetricTypeGauge:
-						m.aggregateGaugeMetric(ctx, metric, aggregationConfig)
-					// case pmetric.MetricTypeSum:
-					// 	m.aggregateSumMetric(metric)
-					// case pmetric.MetricTypeHistogram:
-					// 	m.aggregateHistogramMetric(metric)
-					// }
+						m.aggregateGaugeMetric(metric, aggregationConfig, currentTime)
+						// case pmetric.MetricTypeSum:
+						// 	m.aggregateSumMetric(metric)
+						// case pmetric.MetricTypeHistogram:
+						// 	m.aggregateHistogramMetric(metric)
+						// }
 					}
 					if !aggregationConfig.KeepOriginal {
 						return true
 					}
-				} 
+				}
 				return false
 			})
 			return metrics.Len() == 0
@@ -115,19 +119,21 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 		return rm.ScopeMetrics().Len() == 0
 	})
 
+	m.flushedMetricsMutex.Lock()
 	if m.flushedMetrics.Len() > 0 {
 		rm := md.ResourceMetrics().AppendEmpty()
 		sm := rm.ScopeMetrics().AppendEmpty()
 		for i := 0; i < m.flushedMetrics.Len(); i++ {
 			m.flushedMetrics.At(i).CopyTo(sm.Metrics().AppendEmpty())
 		}
+		// Clear the flushed metrics
 		m.flushedMetrics = pmetric.NewMetricSlice()
+
 	}
+	m.flushedMetricsMutex.Unlock()
 
 	return md, nil
 }
-
-
 
 func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.Host) error {
 	go m.flushExpiredWindows()
@@ -135,10 +141,6 @@ func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.
 }
 
 func (m *metricsAggregationProcessor) Shutdown(ctx context.Context) error {
-	// TODO: Implement any shutdown logic if needed
+	m.cancel()
 	return nil
 }
-
-
-
-

@@ -16,13 +16,7 @@ import (
 	"go.opentelemetry.io/collector/processor/processortest"
 )
 
-type testMetric struct {
-	metricNames     []string
-	metricValues    [][]float64
-	metricIntValues [][]int64
-	isDelta         []bool
-	deltaSecond     int
-}
+
 
 type deltaToRateTest struct {
 	name       string

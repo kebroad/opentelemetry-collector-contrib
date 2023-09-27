@@ -98,39 +98,44 @@ const (
 )
 
 type metricsAggregationProcessor struct {
-	next            consumer.Metrics
-	clock Clock
-	compiledPatterns map[string]*regexp.Regexp
-	logger          *zap.Logger
-	config          *Config
-	flushedMetrics pmetric.MetricSlice
-	windows map[metricKey][]*aggregatedWindow
-	windowsMutex sync.RWMutex
+	ctx    context.Context
+    cancel context.CancelFunc
+	next                consumer.Metrics
+	clock               Clock
+	compiledPatterns    map[string]*regexp.Regexp
+	logger              *zap.Logger
+	config              *Config
+	flushedMetrics      pmetric.MetricSlice
+	flushedMetricsMutex sync.RWMutex
+	windows             map[windowKey]*aggregatedWindow
+	windowsMutex        sync.RWMutex
 }
 
-func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) *metricsAggregationProcessor {
+func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) (*metricsAggregationProcessor, error) {
 	compiledPatterns := make(map[string]*regexp.Regexp)
 	for _, aggregationConfig := range cfg.Aggregations {
 		if aggregationConfig.MatchType == Regexp {
 			pattern, err := regexp.Compile(aggregationConfig.MetricName)
 			if err != nil {
 				logger.Error("Failed to compile regex pattern for metric name", zap.String("metric_name", aggregationConfig.MetricName), zap.Error(err))
-				continue
+				return nil, err
 			}
 			compiledPatterns[aggregationConfig.MetricName] = pattern
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &metricsAggregationProcessor{
-		config: cfg,
-		logger:   logger,
-		windows: make(map[metricKey][]*aggregatedWindow),
-		clock: &realClock{},
-		flushedMetrics: pmetric.NewMetricSlice(),
+		ctx: ctx,
+		cancel: cancel,
+		config:           cfg,
+		logger:           logger,
+		windows:          make(map[windowKey]*aggregatedWindow),
+		clock:            &realClock{},
+		flushedMetrics:   pmetric.NewMetricSlice(),
 		compiledPatterns: compiledPatterns,
-	}
+	}, nil
 }
-
 
 func (m *metricsAggregationProcessor) getAggregationConfigForMetric(metric pmetric.Metric) *MetricAggregationConfig {
 	for _, aggregationConfig := range m.config.Aggregations {
@@ -164,8 +169,7 @@ func getMatchingAttributes(aggregationConfig *MetricAggregationConfig, attribute
 }
 
 func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
-	ctx = context.WithValue(ctx, CurrentTimeContextKey, m.clock.Now())
-	// Iterate over ResourceMetrics
+	currentTime := m.clock.Now()
 	rms := md.ResourceMetrics()
 	rms.RemoveIf(func(rm pmetric.ResourceMetrics) bool {
 		rm.ScopeMetrics().RemoveIf(func(sm pmetric.ScopeMetrics) bool {
@@ -175,17 +179,17 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 				if aggregationConfig != nil {
 					switch metric.Type() {
 					case pmetric.MetricTypeGauge:
-						m.aggregateGaugeMetric(ctx, metric, aggregationConfig)
-					// case pmetric.MetricTypeSum:
-					// 	m.aggregateSumMetric(metric)
-					// case pmetric.MetricTypeHistogram:
-					// 	m.aggregateHistogramMetric(metric)
-					// }
+						m.aggregateGaugeMetric(metric, aggregationConfig, currentTime)
+						// case pmetric.MetricTypeSum:
+						// 	m.aggregateSumMetric(metric)
+						// case pmetric.MetricTypeHistogram:
+						// 	m.aggregateHistogramMetric(metric)
+						// }
 					}
 					if !aggregationConfig.KeepOriginal {
 						return true
 					}
-				} 
+				}
 				return false
 			})
 			return metrics.Len() == 0
@@ -193,19 +197,22 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 		return rm.ScopeMetrics().Len() == 0
 	})
 
+	m.flushedMetricsMutex.RLock()
 	if m.flushedMetrics.Len() > 0 {
 		rm := md.ResourceMetrics().AppendEmpty()
 		sm := rm.ScopeMetrics().AppendEmpty()
 		for i := 0; i < m.flushedMetrics.Len(); i++ {
 			m.flushedMetrics.At(i).CopyTo(sm.Metrics().AppendEmpty())
 		}
+		m.flushedMetricsMutex.RUnlock()
+		m.flushedMetricsMutex.Lock()
+		// Clear the flushed metrics
 		m.flushedMetrics = pmetric.NewMetricSlice()
+		m.flushedMetricsMutex.Unlock()
 	}
 
 	return md, nil
 }
-
-
 
 func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.Host) error {
 	go m.flushExpiredWindows()
@@ -213,13 +220,9 @@ func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.
 }
 
 func (m *metricsAggregationProcessor) Shutdown(ctx context.Context) error {
-	// TODO: Implement any shutdown logic if needed
+	m.cancel()
 	return nil
 }
-
-
-
-
 
 ```
 ./testutils/clock.go
@@ -301,7 +304,8 @@ func (m *mockClock) Add(d time.Duration) {
 package metricsaggregationprocessor
 
 import (
-	"context"
+	"time"
+
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
@@ -329,18 +333,22 @@ func setValue(dp pmetric.NumberDataPoint, value float64) {
 
 
 
-func (m *metricsAggregationProcessor) aggregateGaugeMetric(ctx context.Context, metric pmetric.Metric, aggregationConfig *MetricAggregationConfig) {
+func (m *metricsAggregationProcessor) aggregateGaugeMetric(metric pmetric.Metric, aggregationConfig *MetricAggregationConfig, currentTime time.Time) {
 	// Get the data points from the metric
 	dps := metric.Gauge().DataPoints()
 
 	// Iterate over the data points
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
+		// If the timestamp on this datapoint is before the current time minus max_staleness, skip it
+		if dp.Timestamp().AsTime().Before(currentTime.Add(-m.config.MaxStaleness)) {
+			continue
+		}
 		matchingAttributes := getMatchingAttributes(aggregationConfig, dp.Attributes())
 		if matchingAttributes.Len() == 0 {
 			continue
 		}
-		relevantWindow := m.getWindowForMetric(ctx, metric, matchingAttributes, aggregationConfig)
+		relevantWindow := m.getWindowForMetric(metric, matchingAttributes, dp.Timestamp(), aggregationConfig)
 		if relevantWindow == nil {
 			continue
 		}
@@ -474,7 +482,10 @@ func createMetricsProcessor(
 		return nil, err
 	}
 
-	metricsProcessor := newMetricsAggregationProcessor(rCfg, set.Logger,)
+	metricsProcessor, err := newMetricsAggregationProcessor(rCfg, set.Logger)
+	if err != nil {
+		return nil, err
+	}
 	
 	
 	return processorhelper.NewMetricsProcessor(
@@ -504,13 +515,14 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
-type metricKey struct {
+type windowKey struct {
 	Name       string
 	Attributes string // Serialized representation of attributes
 	Type 	 pmetric.MetricType
+	StartTime pcommon.Timestamp
 }
 
-func generateMetricKey(metric pmetric.Metric, attributes pcommon.Map) metricKey {
+func generateWindowKey(metric pmetric.Metric, attributes pcommon.Map, startTime pcommon.Timestamp) windowKey {
 	// Serialize attributes in a consistent manner
 	// For simplicity, we'll just join them as key=value pairs, but in practice, you might want a more efficient representation.
 	var serializedAttributes []string
@@ -520,16 +532,53 @@ func generateMetricKey(metric pmetric.Metric, attributes pcommon.Map) metricKey 
 	})
 	sort.Strings(serializedAttributes) // Ensure consistent order
 
-	return metricKey{
+	return windowKey{
 		Name:       metric.Name(),
 		Attributes: strings.Join(serializedAttributes, ","),
 		Type: 		metric.Type(),
+		StartTime: startTime,
 	}
 }
 
 
 
 
+
+```
+./metrics_aggregation_processor-test.go
+```
+package metricsaggregationprocessor
+
+
+
+// func generateGaugeMetrics(tm testMetric) pmetric.Metrics {
+// 	md := pmetric.NewMetrics()
+// 	now := time.Now()
+
+// 	rm := md.ResourceMetrics().AppendEmpty()
+// 	ms := rm.ScopeMetrics().AppendEmpty().Metrics()
+// 	for i, name := range tm.metricNames {
+// 		m := ms.AppendEmpty()
+// 		m.SetName(name)
+// 		dps := m.SetEmptyGauge().DataPoints()
+// 		if i < len(tm.metricValues) {
+// 			for _, value := range tm.metricValues[i] {
+// 				dp := dps.AppendEmpty()
+// 				dp.SetTimestamp(pcommon.NewTimestampFromTime(now.Add(120 * time.Second)))
+// 				dp.SetDoubleValue(value)
+// 			}
+// 		}
+// 		if i < len(tm.metricIntValues) {
+// 			for _, value := range tm.metricIntValues[i] {
+// 				dp := dps.AppendEmpty()
+// 				dp.SetTimestamp(pcommon.NewTimestampFromTime(now.Add(120 * time.Second)))
+// 				dp.SetIntValue(value)
+// 			}
+// 		}
+// 	}
+
+// 	return md
+// }
 
 ```
 ./metadata/generated_status.go
@@ -552,13 +601,14 @@ const (
 package metricsaggregationprocessor
 
 import (
-	"context"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
+
+var baseTime = time.Unix(0, 0) // Unix epoch
 
 type aggregatedWindow struct {
 	sync.RWMutex
@@ -567,9 +617,8 @@ type aggregatedWindow struct {
 	count           int64   // for average calculation
 }
 
-func (m *metricsAggregationProcessor) createNewWindowIfExists(ctx context.Context, metric pmetric.Metric, attributes pcommon.Map, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
-	currentTime := ctx.Value(CurrentTimeContextKey).(time.Time)
-	windowMetricTimestamp := currentTime.Add(m.config.AggregationPeriod/2)
+func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, attributes pcommon.Map, timestamp pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
+	windowMetricTimestamp := timestamp.AsTime().Add(m.config.AggregationPeriod/2)
 	// create a metric copy from the original metric
 	windowMetric := pmetric.NewMetric()
 	var windowMetricType pmetric.MetricType
@@ -604,75 +653,67 @@ func (m *metricsAggregationProcessor) createNewWindowIfExists(ctx context.Contex
 		windowMetric.SetName(aggregationConfig.NewName)
 	}
 	window := &aggregatedWindow{
-		startTime:       currentTime,
+		startTime:       timestamp.AsTime(),
 		metric:          windowMetric,
 	}
 	return window
 }
 
-func (m *metricsAggregationProcessor) getWindowForMetric(ctx context.Context, metric pmetric.Metric, attributes pcommon.Map, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
-	metricKey := generateMetricKey(metric, attributes)
-	var metricWindow *aggregatedWindow
-	// check if this metricKey has an aggregation with the same type
-	m.windowsMutex.RLock()
-	windowsList, exists := m.windows[metricKey]
-	m.windowsMutex.RUnlock()
-	if !exists {
-		metricWindow = m.createNewWindowIfExists(ctx, metric, attributes, aggregationConfig)
-		if metricWindow == nil {
-			return nil
-		}
-		m.windowsMutex.Lock()
-		m.windows[metricKey] = []*aggregatedWindow{metricWindow}
-		m.windowsMutex.Unlock()
-	} else {
-		found := false
-		for _, window := range windowsList {
-			if time.Now().After(window.startTime) && time.Now().Before(window.startTime.Add(m.config.AggregationPeriod)) {
-				metricWindow = window
-				found = true
-				break
-			}
-		}
-		if !found {
-			// Create a new window and add to the list
-			metricWindow = m.createNewWindowIfExists(ctx, metric, attributes, aggregationConfig)
-			if metricWindow != nil {
-				m.windowsMutex.Lock()
-				m.windows[metricKey] = append(m.windows[metricKey], metricWindow)
-				m.windowsMutex.Unlock()
-			} else {
-				return nil
-			}
-		}
+func getRoundedStartTime(timestamp pcommon.Timestamp, aggregationPeriod time.Duration) pcommon.Timestamp {
+	// Convert the pcommon.Timestamp to time.Time
+	timestampTime := timestamp.AsTime()
+
+	// Calculate the number of aggregation periods since the Unix epoch
+	periodsSinceEpoch := timestampTime.UnixNano() / int64(aggregationPeriod)
+
+	// Calculate the rounded start time in nanoseconds
+	roundedStartTimeNano := periodsSinceEpoch * int64(aggregationPeriod)
+
+	// Convert the rounded start time in nanoseconds back to pcommon.Timestamp
+	roundedStartTime := pcommon.NewTimestampFromTime(time.Unix(0, roundedStartTimeNano))
+
+	return roundedStartTime
+}
+
+func (m *metricsAggregationProcessor) getWindowForMetric(metric pmetric.Metric, attributes pcommon.Map, timestamp pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
+	roundedStartTime := getRoundedStartTime(timestamp, m.config.AggregationPeriod)
+	
+	windowKey := generateWindowKey(metric, attributes, roundedStartTime)
+	m.windowsMutex.Lock()
+	defer m.windowsMutex.Unlock()
+
+	// Check if a window for the metric key already exists
+	if window, exists := m.windows[windowKey]; exists {
+		return window
 	}
 
-	return metricWindow
+	newWindow := m.createNewWindow(metric, attributes, roundedStartTime, aggregationConfig)
+
+	// Store the new window in the map and return it
+	m.windows[windowKey] = newWindow
+	return newWindow
+
 }
 
 func (m *metricsAggregationProcessor) flushExpiredWindows() {
-	delay := m.config.AggregationPeriod / 2
+	delay := m.config.AggregationPeriod / 4
     for {
-        <-time.After(delay)
-        currentTime := m.clock.Now()
-		m.windowsMutex.Lock()
-        for key, windowsList := range m.windows {
-            newWindowsList := windowsList[:0]
-            for _, window := range windowsList {
-                if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
-                    window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
-                } else {
-                    newWindowsList = append(newWindowsList, window)
-                }
-            }
-
-            if len(newWindowsList) == 0 {
-                delete(m.windows, key)
-            } else {
-                m.windows[key] = newWindowsList
-            }
-        }
-		m.windowsMutex.Unlock()
+		select {
+		case <-m.ctx.Done():
+			return
+		case <- m.clock.After(delay):
+			currentTime := m.clock.Now()
+			m.windowsMutex.Lock()
+			m.flushedMetricsMutex.Lock()
+			for key, window := range m.windows {
+				if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
+					window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
+					delete(m.windows, key)
+				}
+			}
+			m.windowsMutex.Unlock()
+			m.flushedMetricsMutex.Unlock()
+		}
     }
 }
 ```
