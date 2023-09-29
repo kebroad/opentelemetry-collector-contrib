@@ -19,12 +19,21 @@ func getValue(dp pmetric.NumberDataPoint) float64 {
 }
 
 // Helper function to set the value of a data point based on its type
-func setValue(dp pmetric.NumberDataPoint, value float64) {
+func setValue(dp pmetric.NumberDataPoint, value float64, inType pmetric.NumberDataPointValueType) {
 	switch dp.ValueType() {
 	case pmetric.NumberDataPointValueTypeDouble:
 		dp.SetDoubleValue(value)
 	case pmetric.NumberDataPointValueTypeInt:
 		dp.SetIntValue(int64(value))
+	case pmetric.NumberDataPointValueTypeEmpty:
+		switch inType {
+		case pmetric.NumberDataPointValueTypeDouble:
+			dp.SetDoubleValue(value)
+		case pmetric.NumberDataPointValueTypeInt:
+			dp.SetIntValue(int64(value))
+		default:
+			dp.SetDoubleValue(value)
+		}
 	}
 }
 
@@ -71,7 +80,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeMin(window *aggregatedWindow
 	defer window.Unlock()
 
 	if getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0)) {
-		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp))
+		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp), dp.ValueType())
 	}
 }
 
@@ -80,7 +89,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeMax(window *aggregatedWindow
 	defer window.Unlock()
 
 	if getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)) {
-		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp))
+		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp), dp.ValueType())
 	}
 }
 
@@ -96,7 +105,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeAverage(window *aggregatedWi
 	defer window.Unlock()
 
 	sum := getValue(window.metric.Gauge().DataPoints().At(0)) + getValue(dp)
-	setValue(window.metric.Gauge().DataPoints().At(0), sum)
+	setValue(window.metric.Gauge().DataPoints().At(0), sum, dp.ValueType())
 	window.count++
 }
 
@@ -131,4 +140,13 @@ func findBucketIndex(value float64, explicitBounds []float64) int {
 		}
 	}
 	return len(explicitBounds) // This will be the index of the last bucket
+}
+
+func completeGaugeAggregation(metric pmetric.Metric, aggregationType AggregationType, count int64) {
+	switch aggregationType {
+	case Count:
+		metric.Gauge().DataPoints().At(0).SetIntValue(int64(count))
+	case Average:
+		setValue(metric.Gauge().DataPoints().At(0), getValue(metric.Gauge().DataPoints().At(0))/float64(count), metric.Gauge().DataPoints().At(0).ValueType())
+	}
 }

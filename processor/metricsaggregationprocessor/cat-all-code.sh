@@ -4,7 +4,7 @@
 script_dir="$(dirname "$0")"
 
 # List of files to exclude
-exclude_files=("README.md" "go.sum" "go.mod" "output.txt" "Makefile" "cat-all-code.sh")
+exclude_files=("README.md" "go.sum" "go.mod" "output.txt" "Makefile" "cat-all-code.sh" "metrics_aggregation_processor_test.go")
 
 # Construct the find command with the exclusions
 find_cmd="find \"$script_dir\" -type f"

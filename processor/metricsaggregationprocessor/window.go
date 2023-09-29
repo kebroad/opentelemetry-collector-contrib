@@ -12,12 +12,13 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
-var baseTime = time.Unix(0, 0) // Unix epoch
+var baseTime = time.Unix(0, 0) // Unix epoch 
 
 type aggregatedWindow struct {
 	sync.RWMutex
 	startTime time.Time
 	metric    pmetric.Metric
+	aggregationType AggregationType
 	count     int64 // for average calculation
 }
 
@@ -46,8 +47,8 @@ func generateWindowKey(metric pmetric.Metric, attributes pcommon.Map, startTime 
 	}
 }
 
-func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, attributes pcommon.Map, timestamp pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
-	windowMetricTimestamp := timestamp.AsTime().Add(m.config.AggregationPeriod / 2)
+func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, attributes pcommon.Map, startTime pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
+	windowMetricTimestamp := startTime.AsTime().Add(m.config.AggregationPeriod / 2)
 	// create a metric copy from the original metric
 	windowMetric := pmetric.NewMetric()
 	var windowMetricType pmetric.MetricType
@@ -58,14 +59,15 @@ func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, att
 	}
 	switch windowMetricType {
 	case pmetric.MetricTypeGauge:
-		dp := windowMetric.Gauge().DataPoints().AppendEmpty()
+		dp := windowMetric.SetEmptyGauge().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
 		attributes.CopyTo(dp.Attributes())
 	case pmetric.MetricTypeSum:
-		dp := windowMetric.Sum().DataPoints().AppendEmpty()
+		dp := windowMetric.SetEmptySum().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
 		attributes.CopyTo(dp.Attributes())
 	case pmetric.MetricTypeHistogram:
+		windowMetric.SetEmptyHistogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 		dp := windowMetric.Histogram().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
 		attributes.CopyTo(dp.Attributes())
@@ -82,8 +84,9 @@ func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, att
 		windowMetric.SetName(aggregationConfig.NewName)
 	}
 	window := &aggregatedWindow{
-		startTime: timestamp.AsTime(),
+		startTime: startTime.AsTime(),
 		metric:    windowMetric,
+		aggregationType: aggregationConfig.AggregationType,
 	}
 	return window
 }
@@ -124,24 +127,38 @@ func (m *metricsAggregationProcessor) getWindowForMetric(metric pmetric.Metric, 
 
 }
 
-func (m *metricsAggregationProcessor) flushExpiredWindows() {
+func (m *metricsAggregationProcessor) flushWindows() {
+	currentTime := m.clock.Now()
+	m.windowsMutex.Lock()
+	m.flushedMetricsMutex.Lock()
+	for key, window := range m.windows {
+		if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
+			window.complete()
+			window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
+			delete(m.windows, key)
+		}
+	}
+	m.windowsMutex.Unlock()
+	m.flushedMetricsMutex.Unlock()
+}
+
+func (m *metricsAggregationProcessor) startFlushInterval() {
 	delay := m.config.AggregationPeriod / 4
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.clock.After(delay):
-			currentTime := m.clock.Now()
-			m.windowsMutex.Lock()
-			m.flushedMetricsMutex.Lock()
-			for key, window := range m.windows {
-				if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
-					window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
-					delete(m.windows, key)
-				}
-			}
-			m.windowsMutex.Unlock()
-			m.flushedMetricsMutex.Unlock()
+			m.flushWindows()
 		}
+	}
+}
+
+func (w *aggregatedWindow) complete(){
+	w.Lock()
+	defer w.Unlock()
+	switch w.metric.Type() {
+	case pmetric.MetricTypeGauge:
+		completeGaugeAggregation(w.metric, w.aggregationType, w.count)	
 	}
 }

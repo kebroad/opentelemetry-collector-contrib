@@ -98,8 +98,8 @@ const (
 )
 
 type metricsAggregationProcessor struct {
-	ctx    context.Context
-    cancel context.CancelFunc
+	ctx                 context.Context
+	cancel              context.CancelFunc
 	next                consumer.Metrics
 	clock               Clock
 	compiledPatterns    map[string]*regexp.Regexp
@@ -126,8 +126,8 @@ func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) (*metricsAg
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &metricsAggregationProcessor{
-		ctx: ctx,
-		cancel: cancel,
+		ctx:              ctx,
+		cancel:           cancel,
 		config:           cfg,
 		logger:           logger,
 		windows:          make(map[windowKey]*aggregatedWindow),
@@ -197,25 +197,24 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 		return rm.ScopeMetrics().Len() == 0
 	})
 
-	m.flushedMetricsMutex.RLock()
+	m.flushedMetricsMutex.Lock()
 	if m.flushedMetrics.Len() > 0 {
 		rm := md.ResourceMetrics().AppendEmpty()
 		sm := rm.ScopeMetrics().AppendEmpty()
 		for i := 0; i < m.flushedMetrics.Len(); i++ {
 			m.flushedMetrics.At(i).CopyTo(sm.Metrics().AppendEmpty())
 		}
-		m.flushedMetricsMutex.RUnlock()
-		m.flushedMetricsMutex.Lock()
 		// Clear the flushed metrics
 		m.flushedMetrics = pmetric.NewMetricSlice()
-		m.flushedMetricsMutex.Unlock()
+
 	}
+	m.flushedMetricsMutex.Unlock()
 
 	return md, nil
 }
 
 func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.Host) error {
-	go m.flushExpiredWindows()
+	go m.startFlushInterval()
 	return nil
 }
 
@@ -322,12 +321,21 @@ func getValue(dp pmetric.NumberDataPoint) float64 {
 }
 
 // Helper function to set the value of a data point based on its type
-func setValue(dp pmetric.NumberDataPoint, value float64) {
+func setValue(dp pmetric.NumberDataPoint, value float64, inType pmetric.NumberDataPointValueType) {
 	switch dp.ValueType() {
 	case pmetric.NumberDataPointValueTypeDouble:
 		dp.SetDoubleValue(value)
 	case pmetric.NumberDataPointValueTypeInt:
 		dp.SetIntValue(int64(value))
+	case pmetric.NumberDataPointValueTypeEmpty:
+		switch inType {
+		case pmetric.NumberDataPointValueTypeDouble:
+			dp.SetDoubleValue(value)
+		case pmetric.NumberDataPointValueTypeInt:
+			dp.SetIntValue(int64(value))
+		default:
+			dp.SetDoubleValue(value)
+		}
 	}
 }
 
@@ -374,7 +382,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeMin(window *aggregatedWindow
 	defer window.Unlock()
 
 	if getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0)) {
-		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp))
+		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp), dp.ValueType())
 	}
 }
 
@@ -383,7 +391,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeMax(window *aggregatedWindow
 	defer window.Unlock()
 
 	if getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)) {
-		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp))
+		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp), dp.ValueType())
 	}
 }
 
@@ -399,7 +407,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeAverage(window *aggregatedWi
 	defer window.Unlock()
 
 	sum := getValue(window.metric.Gauge().DataPoints().At(0)) + getValue(dp)
-	setValue(window.metric.Gauge().DataPoints().At(0), sum)
+	setValue(window.metric.Gauge().DataPoints().At(0), sum, dp.ValueType())
 	window.count++
 }
 
@@ -434,6 +442,15 @@ func findBucketIndex(value float64, explicitBounds []float64) int {
 		}
 	}
 	return len(explicitBounds) // This will be the index of the last bucket
+}
+
+func completeGaugeAggregation(metric pmetric.Metric, aggregationType AggregationType, count int64) {
+	switch aggregationType {
+	case Count:
+		metric.Gauge().DataPoints().At(0).SetIntValue(int64(count))
+	case Average:
+		setValue(metric.Gauge().DataPoints().At(0), getValue(metric.Gauge().DataPoints().At(0))/float64(count), metric.Gauge().DataPoints().At(0).ValueType())
+	}
 }
 ```
 ./factory.go
@@ -503,84 +520,6 @@ func validateConfiguration(config *Config) error {
 	return nil
 }
 ```
-./metric_key.go
-```
-package metricsaggregationprocessor
-
-import (
-	"sort"
-	"strings"
-
-	"go.opentelemetry.io/collector/pdata/pmetric"
-	"go.opentelemetry.io/collector/pdata/pcommon"
-)
-
-type windowKey struct {
-	Name       string
-	Attributes string // Serialized representation of attributes
-	Type 	 pmetric.MetricType
-	StartTime pcommon.Timestamp
-}
-
-func generateWindowKey(metric pmetric.Metric, attributes pcommon.Map, startTime pcommon.Timestamp) windowKey {
-	// Serialize attributes in a consistent manner
-	// For simplicity, we'll just join them as key=value pairs, but in practice, you might want a more efficient representation.
-	var serializedAttributes []string
-	attributes.Range(func(k string, v pcommon.Value) bool {
-		serializedAttributes = append(serializedAttributes, k+"="+v.AsString())
-		return true
-	})
-	sort.Strings(serializedAttributes) // Ensure consistent order
-
-	return windowKey{
-		Name:       metric.Name(),
-		Attributes: strings.Join(serializedAttributes, ","),
-		Type: 		metric.Type(),
-		StartTime: startTime,
-	}
-}
-
-
-
-
-
-```
-./metrics_aggregation_processor-test.go
-```
-package metricsaggregationprocessor
-
-
-
-// func generateGaugeMetrics(tm testMetric) pmetric.Metrics {
-// 	md := pmetric.NewMetrics()
-// 	now := time.Now()
-
-// 	rm := md.ResourceMetrics().AppendEmpty()
-// 	ms := rm.ScopeMetrics().AppendEmpty().Metrics()
-// 	for i, name := range tm.metricNames {
-// 		m := ms.AppendEmpty()
-// 		m.SetName(name)
-// 		dps := m.SetEmptyGauge().DataPoints()
-// 		if i < len(tm.metricValues) {
-// 			for _, value := range tm.metricValues[i] {
-// 				dp := dps.AppendEmpty()
-// 				dp.SetTimestamp(pcommon.NewTimestampFromTime(now.Add(120 * time.Second)))
-// 				dp.SetDoubleValue(value)
-// 			}
-// 		}
-// 		if i < len(tm.metricIntValues) {
-// 			for _, value := range tm.metricIntValues[i] {
-// 				dp := dps.AppendEmpty()
-// 				dp.SetTimestamp(pcommon.NewTimestampFromTime(now.Add(120 * time.Second)))
-// 				dp.SetIntValue(value)
-// 			}
-// 		}
-// 	}
-
-// 	return md
-// }
-
-```
 ./metadata/generated_status.go
 ```
 // Code generated by mdatagen. DO NOT EDIT.
@@ -601,24 +540,54 @@ const (
 package metricsaggregationprocessor
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"time"
+
+
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
-var baseTime = time.Unix(0, 0) // Unix epoch
+var baseTime = time.Unix(0, 0) // Unix epoch 
 
 type aggregatedWindow struct {
 	sync.RWMutex
-	startTime       time.Time
-	metric          pmetric.Metric
-	count           int64   // for average calculation
+	startTime time.Time
+	metric    pmetric.Metric
+	aggregationType AggregationType
+	count     int64 // for average calculation
 }
 
-func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, attributes pcommon.Map, timestamp pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
-	windowMetricTimestamp := timestamp.AsTime().Add(m.config.AggregationPeriod/2)
+type windowKey struct {
+	Name       string
+	Attributes string // Serialized representation of attributes
+	Type       pmetric.MetricType
+	StartTime  pcommon.Timestamp
+}
+
+func generateWindowKey(metric pmetric.Metric, attributes pcommon.Map, startTime pcommon.Timestamp) windowKey {
+	// Serialize attributes in a consistent manner
+	// For simplicity, we'll just join them as key=value pairs, but in practice, you might want a more efficient representation.
+	var serializedAttributes []string
+	attributes.Range(func(k string, v pcommon.Value) bool {
+		serializedAttributes = append(serializedAttributes, k+"="+v.AsString())
+		return true
+	})
+	sort.Strings(serializedAttributes) // Ensure consistent order
+
+	return windowKey{
+		Name:       metric.Name(),
+		Attributes: strings.Join(serializedAttributes, ","),
+		Type:       metric.Type(),
+		StartTime:  startTime,
+	}
+}
+
+func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, attributes pcommon.Map, startTime pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
+	windowMetricTimestamp := startTime.AsTime().Add(m.config.AggregationPeriod / 2)
 	// create a metric copy from the original metric
 	windowMetric := pmetric.NewMetric()
 	var windowMetricType pmetric.MetricType
@@ -629,21 +598,22 @@ func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, att
 	}
 	switch windowMetricType {
 	case pmetric.MetricTypeGauge:
-		dp := windowMetric.Gauge().DataPoints().AppendEmpty()
+		dp := windowMetric.SetEmptyGauge().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
 		attributes.CopyTo(dp.Attributes())
 	case pmetric.MetricTypeSum:
-		dp := windowMetric.Sum().DataPoints().AppendEmpty()
+		dp := windowMetric.SetEmptySum().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
 		attributes.CopyTo(dp.Attributes())
 	case pmetric.MetricTypeHistogram:
+		windowMetric.SetEmptyHistogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 		dp := windowMetric.Histogram().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.NewTimestampFromTime(windowMetricTimestamp))
 		attributes.CopyTo(dp.Attributes())
 		// If its to bucketize, initialize the scale and bounds
 		if aggregationConfig.AggregationType == Bucketize {
 			dp.BucketCounts().FromRaw(make([]uint64, aggregationConfig.BucketCount))
-			scale := float64(aggregationConfig.UpperBound - aggregationConfig.LowerBound) / float64(aggregationConfig.BucketCount)
+			scale := float64(aggregationConfig.UpperBound-aggregationConfig.LowerBound) / float64(aggregationConfig.BucketCount)
 			for i := 0; i < aggregationConfig.BucketCount; i++ {
 				dp.ExplicitBounds().Append(aggregationConfig.LowerBound + float64(i)*scale)
 			}
@@ -653,8 +623,9 @@ func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, att
 		windowMetric.SetName(aggregationConfig.NewName)
 	}
 	window := &aggregatedWindow{
-		startTime:       timestamp.AsTime(),
-		metric:          windowMetric,
+		startTime: startTime.AsTime(),
+		metric:    windowMetric,
+		aggregationType: aggregationConfig.AggregationType,
 	}
 	return window
 }
@@ -677,7 +648,7 @@ func getRoundedStartTime(timestamp pcommon.Timestamp, aggregationPeriod time.Dur
 
 func (m *metricsAggregationProcessor) getWindowForMetric(metric pmetric.Metric, attributes pcommon.Map, timestamp pcommon.Timestamp, aggregationConfig *MetricAggregationConfig) *aggregatedWindow {
 	roundedStartTime := getRoundedStartTime(timestamp, m.config.AggregationPeriod)
-	
+
 	windowKey := generateWindowKey(metric, attributes, roundedStartTime)
 	m.windowsMutex.Lock()
 	defer m.windowsMutex.Unlock()
@@ -695,26 +666,40 @@ func (m *metricsAggregationProcessor) getWindowForMetric(metric pmetric.Metric, 
 
 }
 
-func (m *metricsAggregationProcessor) flushExpiredWindows() {
+func (m *metricsAggregationProcessor) flushWindows() {
+	currentTime := m.clock.Now()
+	m.windowsMutex.Lock()
+	m.flushedMetricsMutex.Lock()
+	for key, window := range m.windows {
+		if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
+			window.complete()
+			window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
+			delete(m.windows, key)
+		}
+	}
+	m.windowsMutex.Unlock()
+	m.flushedMetricsMutex.Unlock()
+}
+
+func (m *metricsAggregationProcessor) startFlushInterval() {
 	delay := m.config.AggregationPeriod / 4
-    for {
+	for {
 		select {
 		case <-m.ctx.Done():
 			return
-		case <- m.clock.After(delay):
-			currentTime := m.clock.Now()
-			m.windowsMutex.Lock()
-			m.flushedMetricsMutex.Lock()
-			for key, window := range m.windows {
-				if window.startTime.Add(m.config.MaxStaleness).Before(currentTime) {
-					window.metric.CopyTo(m.flushedMetrics.AppendEmpty())
-					delete(m.windows, key)
-				}
-			}
-			m.windowsMutex.Unlock()
-			m.flushedMetricsMutex.Unlock()
+		case <-m.clock.After(delay):
+			m.flushWindows()
 		}
-    }
+	}
+}
+
+func (w *aggregatedWindow) complete(){
+	w.Lock()
+	defer w.Unlock()
+	switch w.metric.Type() {
+	case pmetric.MetricTypeGauge:
+		completeGaugeAggregation(w.metric, w.aggregationType, w.count)	
+	}
 }
 ```
 

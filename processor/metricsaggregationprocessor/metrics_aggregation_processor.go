@@ -4,6 +4,8 @@ import (
 	"context"
 	"regexp"
 	"slices"
+	"strings"
+	"strconv"
 	"sync"
 
 	"go.opentelemetry.io/collector/component"
@@ -61,20 +63,26 @@ func newMetricsAggregationProcessor(cfg *Config, logger *zap.Logger) (*metricsAg
 
 func (m *metricsAggregationProcessor) getAggregationConfigForMetric(metric pmetric.Metric) *MetricAggregationConfig {
 	for _, aggregationConfig := range m.config.Aggregations {
-		matchesMetricName := false
 		switch aggregationConfig.MatchType {
 		case Strict:
 			if aggregationConfig.MetricName == metric.Name() {
-				matchesMetricName = true
+				return &aggregationConfig
 			}
 		case Regexp:
 			pattern, exists := m.compiledPatterns[aggregationConfig.MetricName]
-			if exists && pattern.MatchString(metric.Name()) {
-				matchesMetricName = true
+			matches := pattern.FindStringSubmatch(metric.Name())
+			if matches != nil{
+				newConfig := aggregationConfig
+				for i, match := range matches[1:] {
+					placeholder := "${" + strconv.Itoa(i+1) + "}"
+					newConfig.NewName = strings.Replace(newConfig.NewName, placeholder, match, -1)
+				}
+				newConfig.MetricName = metric.Name()
+				return &newConfig
 			}
-		}
-		if matchesMetricName {
-			return &aggregationConfig
+			if exists && pattern.MatchString(metric.Name()) {
+				return &aggregationConfig
+			}
 		}
 	}
 	return nil
@@ -136,7 +144,7 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 }
 
 func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.Host) error {
-	go m.flushExpiredWindows()
+	go m.startFlushInterval()
 	return nil
 }
 
