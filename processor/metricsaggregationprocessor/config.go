@@ -1,6 +1,7 @@
 package metricsaggregationprocessor
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -50,6 +51,17 @@ const (
 	Regexp  MatchType = "regex"
 )
 
+var MatchTypes = []MatchType{Strict, Regexp}
+
+func (mt MatchType) isValid() bool {
+	for _, matchType := range MatchTypes {
+		if matchType == mt {
+			return true
+		}
+	}
+	return false
+}
+
 // AggregationType defines the type of aggregation to perform on matching metrics.
 type AggregationType string
 
@@ -66,7 +78,55 @@ const (
 	Bucketize AggregationType = "bucketize"
 )
 
+var AggregationTypes = []AggregationType{Min, Max, Count, Average, Bucketize}
+
+func (at AggregationType) isValid() bool {
+	for _, aggregationType := range AggregationTypes {
+		if aggregationType == at {
+			return true
+		}
+	}
+	return false
+}
+
+func validateConfiguration(config *Config) error {
+	if config.AggregationPeriod <= 0 {
+		return fmt.Errorf("aggregation_period must be greater than 0, got %v", config.AggregationPeriod)
+	}
+	if config.MaxStaleness <= 0 {
+		return fmt.Errorf("max_staleness must be greater than 0, got %v", config.MaxStaleness)
+	}
+	if config.AggregationPeriod >= config.MaxStaleness {
+		return fmt.Errorf("aggregation_period must be less than max_staleness, got %v and %v", config.AggregationPeriod, config.MaxStaleness)
+	}
+	for _, aggregationConfig := range config.Aggregations {
+		if aggregationConfig.MetricName == "" {
+			return fmt.Errorf("metric_name cannot be empty")
+		}
+		if !aggregationConfig.MatchType.isValid() {
+			return fmt.Errorf("invalid match_type %v", aggregationConfig.MatchType)
+		}
+		if !aggregationConfig.AggregationType.isValid() {
+			return fmt.Errorf("invalid aggregation_type %v", aggregationConfig.AggregationType)
+		}
+		if aggregationConfig.NewName == "" && !aggregationConfig.KeepOriginal {
+			return fmt.Errorf("new_name cannot be empty if keep_original is false")
+		}
+		if aggregationConfig.AggregationType == Bucketize {
+			if aggregationConfig.LowerBound >= aggregationConfig.UpperBound {
+				return fmt.Errorf("lower_bound must be less than upper_bound, got %v and %v", aggregationConfig.LowerBound, aggregationConfig.UpperBound)
+			}
+			if aggregationConfig.BucketCount <= 0 {
+				return fmt.Errorf("bucket_count must be greater than 0, got %v", aggregationConfig.BucketCount)
+			}
+		}
+		if len(aggregationConfig.DataPointAttributes) == 0 {
+			return fmt.Errorf("data_point_attributes cannot be empty")
+		}
+		
+
+	}
 
 
 
-
+}

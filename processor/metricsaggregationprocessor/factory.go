@@ -59,6 +59,3 @@ func createMetricsProcessor(
 	
 }
 
-func validateConfiguration(config *Config) error {
-	return nil
-}
