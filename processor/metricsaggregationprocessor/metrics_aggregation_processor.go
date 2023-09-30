@@ -98,7 +98,7 @@ func getMatchingAttributes(aggregationConfig *MetricAggregationConfig, attribute
 	return matchingAttributes
 }
 
-func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+func (m *metricsAggregationProcessor) processMetrics(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	currentTime := m.clock.Now()
 	rms := md.ResourceMetrics()
 	rms.RemoveIf(func(rm pmetric.ResourceMetrics) bool {
@@ -143,12 +143,12 @@ func (m *metricsAggregationProcessor) processMetrics(ctx context.Context, md pme
 	return md, nil
 }
 
-func (m *metricsAggregationProcessor) Start(ctx context.Context, host component.Host) error {
+func (m *metricsAggregationProcessor) Start(_ context.Context, host component.Host) error {
 	go m.startFlushInterval()
 	return nil
 }
 
-func (m *metricsAggregationProcessor) Shutdown(ctx context.Context) error {
+func (m *metricsAggregationProcessor) Shutdown(_ context.Context) error {
 	m.cancel()
 	return nil
 }

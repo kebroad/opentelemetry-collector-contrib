@@ -25,17 +25,17 @@ type histogramTestMetric struct {
 	attributes map[string]any
 	bounds     []float64
 	counts     []uint64
-	sum 	  float64
-	count 	uint64
-	min	float64
-	max	float64
+	sum        float64
+	count      uint64
+	min        float64
+	max        float64
 	timestamp  time.Time
 }
 
 type metricEvent struct {
-	metricIn    pmetric.Metrics
-	processTime time.Time
-	validateOutputFunc func(t *testing.T,metrics pmetric.Metrics)
+	metricIn           pmetric.Metrics
+	processTime        time.Time
+	validateOutputFunc func(t *testing.T, metrics pmetric.Metrics)
 }
 
 func generateGaugeMetrics(tm []gaugeTestMetric) pmetric.Metrics {
@@ -72,9 +72,9 @@ func generateHistogramMetric(tm histogramTestMetric) pmetric.Metrics {
 }
 
 type metricsAggregationTest struct {
-	name         string
-	config       *Config
-	metricEvents []metricEvent
+	name              string
+	config            *Config
+	metricEvents      []metricEvent
 	endValidationFunc func(metrics pmetric.Metrics)
 }
 
@@ -150,13 +150,13 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 				{
 					metricIn: generateGaugeMetrics([]gaugeTestMetric{
 						{
-						name: "system.cpu.utilization",
-						attributes: map[string]any{
-							"type": "a",
-							"randomattribute": 2,
-						},
-						value: 50,
-						timestamp: baseTime.Add(-7 * time.Second),
+							name: "system.cpu.utilization",
+							attributes: map[string]any{
+								"type":            "a",
+								"randomattribute": 2,
+							},
+							value:     50,
+							timestamp: baseTime.Add(-7 * time.Second),
 						},
 					}),
 					processTime: testBaseTime.Add(5 * time.Minute),
@@ -168,12 +168,12 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 									"type": "a",
 								},
 								timestamp: time.Unix(0, 1695045570000000000),
-								sum: 86,
-								count: 3,
-								min: 12,
-								max: 40,
-								bounds: []float64{0, 10, 20, 30, 40, 50, 60, 70, 80, 90},
-								counts: []uint64{0, 0, 1, 0, 2, 0, 0, 0, 0, 0},
+								sum:       86,
+								count:     3,
+								min:       12,
+								max:       40,
+								bounds:    []float64{0, 10, 20, 30, 40, 50, 60, 70, 80, 90},
+								counts:    []uint64{0, 0, 1, 0, 2, 0, 0, 0, 0, 0},
 							},
 						)
 						require.Equal(t, desiredMetrics.MetricCount(), metrics.MetricCount())
@@ -249,7 +249,7 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 								"uid":      43597239,
 							},
 							timestamp: testBaseTime.Add(-7 * time.Second),
-							value:    13,
+							value:     13,
 						},
 					}),
 					processTime: testBaseTime.Add(7 * time.Second),
@@ -260,13 +260,13 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 				{
 					metricIn: generateGaugeMetrics([]gaugeTestMetric{
 						{
-						name: "system.cpu.utilization",
-						attributes: map[string]any{
-							"type": "a",
-							"randomattribute": 2,
-						},
-						value: 50,
-						timestamp: baseTime.Add(-7 * time.Second),
+							name: "system.cpu.utilization",
+							attributes: map[string]any{
+								"type":            "a",
+								"randomattribute": 2,
+							},
+							value:     50,
+							timestamp: baseTime.Add(-7 * time.Second),
 						},
 					}),
 					processTime: testBaseTime.Add(5 * time.Minute),
@@ -278,7 +278,7 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 									"type": "a",
 								},
 								timestamp: time.Unix(0, 1695045570000000000),
-								value: 20,
+								value:     20,
 							},
 						})
 						require.Equal(t, desiredMetrics.MetricCount(), metrics.MetricCount())
@@ -314,7 +314,7 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 						{
 							name: "system.memory.utilization",
 							attributes: map[string]any{
-								"state": "buffered",
+								"state":    "buffered",
 								"instance": "dsgeaw",
 							},
 							timestamp: testBaseTime.Add(-20 * time.Second),
@@ -323,7 +323,7 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 						{
 							name: "system.memory.utilization",
 							attributes: map[string]any{
-								"state": "buffered",
+								"state":    "buffered",
 								"instance": "sdfaer",
 							},
 							timestamp: testBaseTime.Add(-15 * time.Second),
@@ -340,11 +340,11 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 						{
 							name: "system.memory.utilization",
 							attributes: map[string]any{
-								"state": "buffered",
+								"state":    "buffered",
 								"instance": "jgdfre",
 							},
 							timestamp: testBaseTime.Add(-4 * time.Second),
-							value:    13,
+							value:     13,
 						},
 					}),
 					processTime: testBaseTime.Add(40 * time.Second),
@@ -355,13 +355,13 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 				{
 					metricIn: generateGaugeMetrics([]gaugeTestMetric{
 						{
-						name: "system.memory.utilization",
-						attributes: map[string]any{
-							"state": "buffered",
-							"instance": "jgdfre",
-						},
-						value: 50,
-						timestamp: baseTime.Add(6 * time.Minute),
+							name: "system.memory.utilization",
+							attributes: map[string]any{
+								"state":    "buffered",
+								"instance": "jgdfre",
+							},
+							value:     50,
+							timestamp: baseTime.Add(6 * time.Minute),
 						},
 					}),
 					processTime: testBaseTime.Add(8 * time.Minute),
@@ -373,7 +373,101 @@ func TestMetricsAggregationProcessor(t *testing.T) {
 									"state": "buffered",
 								},
 								timestamp: time.Unix(0, 1695045540000000000),
-								value: 34.5,
+								value:     34.5,
+							},
+						})
+						require.Equal(t, desiredMetrics.MetricCount(), metrics.MetricCount())
+						desiredMetric := desiredMetrics.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(0)
+						actualMetric := metrics.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(0)
+						require.Equal(t, desiredMetric.Name(), actualMetric.Name())
+						require.Equal(t, desiredMetric.Type(), actualMetric.Type())
+						require.Equal(t, desiredMetric.Gauge().DataPoints().At(0).Timestamp(), actualMetric.Gauge().DataPoints().At(0).Timestamp())
+						require.Equal(t, desiredMetric.Gauge().DataPoints().At(0).DoubleValue(), actualMetric.Gauge().DataPoints().At(0).DoubleValue())
+					},
+				},
+			},
+		},
+		{
+			name: "Test Min Aggregation",
+			config: &Config{
+				AggregationPeriod: 2 * time.Minute,
+				MaxStaleness:      6 * time.Minute,
+				Aggregations: []MetricAggregationConfig{
+					{
+						MetricName:          `system\..*\.utilization`,
+						MatchType:           Regexp,
+						AggregationType:     Min,
+						DataPointAttributes: []string{"state"},
+						KeepOriginal:        false,
+					},
+				},
+			},
+			metricEvents: []metricEvent{
+				{
+					metricIn: generateGaugeMetrics([]gaugeTestMetric{
+						{
+							name: "system.memory.utilization",
+							attributes: map[string]any{
+								"state":    "buffered",
+								"instance": "dsgeaw",
+							},
+							timestamp: testBaseTime.Add(-20 * time.Second),
+							value:     12.5,
+						},
+						{
+							name: "system.memory.utilization",
+							attributes: map[string]any{
+								"state":    "buffered",
+								"instance": "sdfaer",
+							},
+							timestamp: testBaseTime.Add(-15 * time.Second),
+							value:     34.5,
+						},
+					}),
+					processTime: testBaseTime,
+					validateOutputFunc: func(t *testing.T, metrics pmetric.Metrics) {
+						require.Equal(t, 0, metrics.MetricCount())
+					},
+				},
+				{
+					metricIn: generateGaugeMetrics([]gaugeTestMetric{
+						{
+							name: "system.memory.utilization",
+							attributes: map[string]any{
+								"state":    "buffered",
+								"instance": "jgdfre",
+							},
+							timestamp: testBaseTime.Add(-4 * time.Second),
+							value:     13,
+						},
+					}),
+					processTime: testBaseTime.Add(40 * time.Second),
+					validateOutputFunc: func(t *testing.T, metrics pmetric.Metrics) {
+						require.Equal(t, 0, metrics.MetricCount())
+					},
+				},
+				{
+					metricIn: generateGaugeMetrics([]gaugeTestMetric{
+						{
+							name: "system.memory.utilization",
+							attributes: map[string]any{
+								"state":    "buffered",
+								"instance": "jgdfre",
+							},
+							value:     50,
+							timestamp: baseTime.Add(6 * time.Minute),
+						},
+					}),
+					processTime: testBaseTime.Add(8 * time.Minute),
+					validateOutputFunc: func(t *testing.T, metrics pmetric.Metrics) {
+						desiredMetrics := generateGaugeMetrics([]gaugeTestMetric{
+							{
+								name: "system.memory.utilization",
+								attributes: map[string]any{
+									"state": "buffered",
+								},
+								timestamp: time.Unix(0, 1695045540000000000),
+								value:     12.5,
 							},
 						})
 						require.Equal(t, desiredMetrics.MetricCount(), metrics.MetricCount())

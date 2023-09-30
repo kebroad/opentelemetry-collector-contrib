@@ -79,7 +79,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeMin(window *aggregatedWindow
 	window.Lock()
 	defer window.Unlock()
 
-	if getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0)) {
+	if (getValue(dp) < getValue(window.metric.Gauge().DataPoints().At(0))) || (window.metric.Gauge().DataPoints().At(0).ValueType() == pmetric.NumberDataPointValueTypeEmpty) {
 		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp), dp.ValueType())
 	}
 }
@@ -88,7 +88,7 @@ func (m *metricsAggregationProcessor) aggregateGaugeMax(window *aggregatedWindow
 	window.Lock()
 	defer window.Unlock()
 
-	if getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)) {
+	if (getValue(dp) > getValue(window.metric.Gauge().DataPoints().At(0)))  || (window.metric.Gauge().DataPoints().At(0).ValueType() == pmetric.NumberDataPointValueTypeEmpty) {
 		setValue(window.metric.Gauge().DataPoints().At(0), getValue(dp), dp.ValueType())
 	}
 }

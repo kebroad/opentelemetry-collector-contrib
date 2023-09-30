@@ -31,13 +31,19 @@ type windowKey struct {
 
 func generateWindowKey(metric pmetric.Metric, attributes pcommon.Map, startTime pcommon.Timestamp) windowKey {
 	// Serialize attributes in a consistent manner
-	// For simplicity, we'll just join them as key=value pairs, but in practice, you might want a more efficient representation.
-	var serializedAttributes []string
+	var keys []string
+	attrMap := make(map[string]string)
 	attributes.Range(func(k string, v pcommon.Value) bool {
-		serializedAttributes = append(serializedAttributes, k+"="+v.AsString())
+		keys = append(keys, k)
+		attrMap[k] = v.AsString()
 		return true
 	})
-	sort.Strings(serializedAttributes) // Ensure consistent order
+	sort.Strings(keys) // Sort by keys
+
+	var serializedAttributes []string
+	for _, k := range keys {
+		serializedAttributes = append(serializedAttributes, k+"="+attrMap[k])
+	}
 
 	return windowKey{
 		Name:       metric.Name(),
@@ -82,6 +88,8 @@ func (m *metricsAggregationProcessor) createNewWindow(metric pmetric.Metric, att
 	}
 	if aggregationConfig.NewName != "" {
 		windowMetric.SetName(aggregationConfig.NewName)
+	} else {
+		windowMetric.SetName(metric.Name())
 	}
 	window := &aggregatedWindow{
 		startTime: startTime.AsTime(),
