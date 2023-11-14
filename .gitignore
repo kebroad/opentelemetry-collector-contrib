@@ -39,3 +39,5 @@ integration-coverage.html
 go.work*
 
 /result
+
+pkg/ottl/ottlfuncs/func_copy_metric.go
