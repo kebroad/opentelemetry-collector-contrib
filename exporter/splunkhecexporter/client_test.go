@@ -496,6 +496,26 @@ func TestReceiveTracesBatches(t *testing.T) {
 				numBatches: 7,
 			},
 		},
+		{
+			name:   "1 trace event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed)",
+			traces: createTraceData(1, 4),
+			conf: func() *Config {
+				cfg := NewFactory().CreateDefaultConfig().(*Config)
+				cfg.MaxContentLengthTraces = 320
+				cfg.DisableCompression = false
+				cfg.EnforceLengthRestrictionUncompressed = true
+				return cfg
+			}(),
+			want: wantType{
+				batches: [][]string{
+					{`"start_time":1`},
+					{`"start_time":2`},
+					{`"start_time":3`},
+					{`"start_time":4`},
+				},
+				numBatches: 4,
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -585,6 +605,26 @@ func TestReceiveLogs(t *testing.T) {
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
 				cfg.MaxContentLengthLogs = 300
 				cfg.DisableCompression = true
+				return cfg
+			}(),
+			want: wantType{
+				batches: [][]string{
+					{`"otel.log.name":"0_0_0"`},
+					{`"otel.log.name":"0_0_1"`},
+					{`"otel.log.name":"0_0_2"`},
+					{`"otel.log.name":"0_0_3"`},
+				},
+				numBatches: 4,
+			},
+		},
+		{
+			name: "1 log event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed)",
+			logs: createLogData(1, 1, 4),
+			conf: func() *Config {
+				cfg := NewFactory().CreateDefaultConfig().(*Config)
+				cfg.MaxContentLengthLogs = 300
+				cfg.DisableCompression = false
+				cfg.EnforceLengthRestrictionUncompressed = true
 				return cfg
 			}(),
 			want: wantType{
@@ -1069,6 +1109,26 @@ func TestReceiveBatchedMetrics(t *testing.T) {
 					{`"time":1.001`},
 					{`"time":2.002`},
 					{`"time":3.003`},
+				},
+				numBatches: 4,
+			},
+		},
+		{
+			name:    "1 metric event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed)",
+			metrics: createMetricsData(1, 4),
+			conf: func() *Config {
+				cfg := NewFactory().CreateDefaultConfig().(*Config)
+				cfg.MaxContentLengthMetrics = 300
+				cfg.DisableCompression = false
+				cfg.EnforceLengthRestrictionUncompressed = true
+				return cfg
+			}(),
+			want: wantType{
+				batches: [][]string{
+					{`"metric_name":"gauge_double_with_dims_0"`},
+					{`"metric_name":"gauge_double_with_dims_1"`},
+					{`"metric_name":"gauge_double_with_dims_2"`},
+					{`"metric_name":"gauge_double_with_dims_3"`},
 				},
 				numBatches: 4,
 			},
