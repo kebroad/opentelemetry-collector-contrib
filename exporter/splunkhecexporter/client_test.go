@@ -515,7 +515,6 @@ func TestReceiveTracesBatches(t *testing.T) {
 					{`"start_time":4`},
 				},
 				numBatches: 4,
-
 			},
 		},
 	}
