@@ -498,7 +498,7 @@ func TestReceiveTracesBatches(t *testing.T) {
 			},
 		},
 		{
-			name:   "1 trace event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed)",
+			name:   "1 trace event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed set to true)",
 			traces: createTraceData(1, 4),
 			conf: func() *Config {
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
@@ -515,7 +515,7 @@ func TestReceiveTracesBatches(t *testing.T) {
 					{`"start_time":4`},
 				},
 				numBatches: 4,
-				
+
 			},
 		},
 	}
@@ -620,7 +620,7 @@ func TestReceiveLogs(t *testing.T) {
 			},
 		},
 		{
-			name: "1 log event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed)",
+			name: "1 log event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed set to true)",
 			logs: createLogData(1, 1, 4),
 			conf: func() *Config {
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
@@ -1116,7 +1116,7 @@ func TestReceiveBatchedMetrics(t *testing.T) {
 			},
 		},
 		{
-			name:    "1 metric event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed)",
+			name:    "1 metric event per payload (configured max content length is same as event size, with compression and EnforceLengthRestrictionUncompressed set to true)",
 			metrics: createMetricsData(1, 4),
 			conf: func() *Config {
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
