@@ -271,6 +271,7 @@ func runTraceExport(testConfig *Config, traces ptrace.Traces, expectedBatchesNum
 	cfg.ClientConfig.Endpoint = "http://" + listener.Addr().String() + "/services/collector"
 	cfg.DisableCompression = testConfig.DisableCompression
 	cfg.MaxContentLengthTraces = testConfig.MaxContentLengthTraces
+	cfg.EnforceLengthRestrictionUncompressed = testConfig.EnforceLengthRestrictionUncompressed
 	cfg.Token = "1234-1234"
 
 	rr := make(chan receivedRequest)
@@ -514,6 +515,7 @@ func TestReceiveTracesBatches(t *testing.T) {
 					{`"start_time":4`},
 				},
 				numBatches: 4,
+				
 			},
 		},
 	}
@@ -1125,12 +1127,13 @@ func TestReceiveBatchedMetrics(t *testing.T) {
 			}(),
 			want: wantType{
 				batches: [][]string{
-					{`"metric_name":"gauge_double_with_dims_0"`},
-					{`"metric_name":"gauge_double_with_dims_1"`},
-					{`"metric_name":"gauge_double_with_dims_2"`},
-					{`"metric_name":"gauge_double_with_dims_3"`},
+					{`"metric_name:gauge_double_with_dims_0"`},
+					{`"metric_name:gauge_double_with_dims_1"`},
+					{`"metric_name:gauge_double_with_dims_2"`},
+					{`"metric_name:gauge_double_with_dims_3"`},
 				},
 				numBatches: 4,
+				compressed: true,
 			},
 		},
 		{

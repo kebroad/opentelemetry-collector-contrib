@@ -163,6 +163,7 @@ func newBufferPool(bufCap uint, compressionEnabled bool, restrictLengthUncompres
 						innerBuffer: innerBuffer,
 						innerWriter: gzip.NewWriter(innerBuffer),
 						maxCapacity: bufCap,
+						restrictLengthUncompressed: restrictLengthUncompressed,
 					}
 				}
 				return &cancellableBytesWriter{
