@@ -44,12 +44,16 @@ The following configuration options can also be configured:
 - `max_content_length_traces` (default: 2097152): Maximum trace payload size in bytes. Trace batches of bigger size
   will be broken down into several requests. Default value is 2097152 bytes (2 MiB). Maximum allowed value is 838860800
   (~ 800 MB). When set to 0, it will treat as infinite length and it will create only one request per batch.
+- `enforce_length_restriction_uncompressed` (default: false): Whether to enforce restricting the uncompressed
+  length of the payload by the maximums fields set above.When true, the maximum content lengths will signify the
+  maximum length of the payload both compressed and/or uncompressed (although uncompressed should always be the
+  upper bound). Use this when the endpoint you are exporting to requires a certain payload maximum after decompression.
 - `max_event_size` (default: 5242880): Maximum raw uncompressed individual event size in bytes. Maximum allowed value is 838860800 (~ 800 MB).
 - `splunk_app_name` (default: "OpenTelemetry Collector Contrib") App name is used to track telemetry information for Splunk App's using HEC by App name.
-- `splunk_app_version` (default: Current OpenTelemetry Collector Contrib Build Version): App version is used to track telemetry information for Splunk App's using HEC by App version. 
-- `log_data_enabled` (default: true): Specifies whether the log data is exported. Set it to `false` if you want the log 
+- `splunk_app_version` (default: Current OpenTelemetry Collector Contrib Build Version): App version is used to track telemetry information for Splunk App's using HEC by App version.
+- `log_data_enabled` (default: true): Specifies whether the log data is exported. Set it to `false` if you want the log
   data to be dropped instead. Applicable in the `logs` pipeline only.
-- `profiling_data_enabled` (default: true): Specifies whether the profiling data is exported. Set it to `false` if 
+- `profiling_data_enabled` (default: true): Specifies whether the profiling data is exported. Set it to `false` if
   you want the profiling data to be dropped instead. Applicable in the `logs` pipeline only.
 - `health_path` (default = '/services/collector/health'): The path reporting [health checks](https://docs.splunk.com/Documentation/Splunk/9.0.1/RESTREF/RESTinput#services.2Fcollector.2Fhealth).
 - `health_check_enabled` (default = false): Whether to perform Splunk HEC Health Check during the exporter's startup.
